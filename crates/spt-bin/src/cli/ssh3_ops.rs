@@ -315,6 +315,9 @@ mod tests {
 
         args.require_authorization = Some("Bearer ok".into());
         validate_exposure("0.0.0.0:8443".parse().unwrap(), &args).unwrap();
+    }
+
+    #[test]
     fn build_acl_denies_uds_paths_by_default() {
         let args = base_args();
         let acl = build_acl(&args).unwrap();
@@ -343,10 +346,14 @@ mod tests {
     #[test]
     fn build_acl_require_authorization_file_checks_header_and_trims_newline() {
         let mut path = std::env::temp_dir();
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         path.push(format!(
             "spt-ssh3-authz-{}-{}.txt",
             std::process::id(),
-            std::thread::current().name().unwrap_or("test")
+            unique
         ));
         std::fs::write(&path, "Bearer from-file\n").unwrap();
 

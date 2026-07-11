@@ -20457,7 +20457,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__ssh3__subcmd__serve)
-            opts="-q -v -h -V --listen --cert --key --self-signed --self-signed-san --protocol-token --allow-target --fixed-target --allow-open-relay --require-authorization --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --listen --cert --key --self-signed --self-signed-san --protocol-token --allow-target --fixed-target --allow-open-relay --require-authorization --require-authorization-file --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -20492,6 +20492,10 @@ _spt() {
                     return 0
                     ;;
                 --require-authorization)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --require-authorization-file)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;

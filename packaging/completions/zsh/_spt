@@ -9713,8 +9713,8 @@ _arguments "${_arguments_options[@]}" : \
 '--protocol-token=[The \`\:protocol\` token the server requires on the HTTP/3 Extended-CONNECT (default \`ssh3\`). A mismatch is rejected with HTTP 421]:TOKEN:_default' \
 '*--allow-target=[Allow-list of \`host\:port\` forward targets the server will dial. May be repeated. Required unless \`--fixed-target\` or \`--allow-open-relay\` is supplied]:HOST:PORT:_default' \
 '(--allow-target)--fixed-target=[Pin every accepted forward to this single \`host\:port\` target regardless of what the peer requests (overrides \`--allow-target\`). Useful for a single-service bastion]:HOST:PORT:_default' \
-'(--allow-target --fixed-target)--allow-open-relay[Explicitly allow peers to choose any \`direct-tcp\` target the server can reach. This creates an open TCP relay; prefer \`--allow-target\` or \`--fixed-target\` for production]' \
-'--require-authorization=[Require this bearer/authorization value on the CONNECT request. When set, a CONNECT whose \`Authorization\` header does not match is rejected with HTTP 401]:TOKEN:_default' \
+'(--require-authorization-file)--require-authorization=[Require this bearer/authorization value on the CONNECT request. When set, a CONNECT whose \`Authorization\` header does not match is rejected with HTTP 401. Prefer \`--require-authorization-file\` for production so secrets do not appear in process arguments]:TOKEN:_default' \
+'--require-authorization-file=[Read the required CONNECT \`Authorization\` header value from this file. Trailing CR/LF is ignored so newline-terminated secret files work]:PATH:_files' \
 '--config=[Path to a single config file]:PATH:_files' \
 '--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
 '--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
@@ -9734,6 +9734,7 @@ trace\:"Trace and above (very verbose)"))' \
 always\:"Always emit color escapes"
 never\:"Never emit color escapes"))' \
 '(--cert --key)--self-signed[Dev-mode only\: generate a self-signed certificate at startup instead of loading \`--cert\`/\`--key\`. Requires the binary to be built with the \`server-selfsigned\` feature; otherwise this flag errors. The SHA-256 SPKI pin of the generated cert is logged so a peer can pin it]' \
+'(--allow-target --fixed-target)--allow-open-relay[Explicitly allow peers to choose any \`direct-tcp\` target the server can reach. This creates an open TCP relay; prefer \`--allow-target\` or \`--fixed-target\` for production]' \
 '--portable[Portable mode\: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)]' \
 '--json[Convenience alias for \`--output json\`]' \
 '-q[Suppress non-essential output]' \

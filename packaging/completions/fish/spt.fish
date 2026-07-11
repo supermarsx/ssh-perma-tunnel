@@ -4951,8 +4951,8 @@ complete -c spt -n "__fish_spt_using_subcommand ssh3-serve" -l self-signed-san -
 complete -c spt -n "__fish_spt_using_subcommand ssh3-serve" -l protocol-token -d 'The `:protocol` token the server requires on the HTTP/3 Extended-CONNECT (default `ssh3`). A mismatch is rejected with HTTP 421' -r
 complete -c spt -n "__fish_spt_using_subcommand ssh3-serve" -l allow-target -d 'Allow-list of `host:port` forward targets the server will dial. May be repeated. Required unless `--fixed-target` or `--allow-open-relay` is supplied' -r
 complete -c spt -n "__fish_spt_using_subcommand ssh3-serve" -l fixed-target -d 'Pin every accepted forward to this single `host:port` target regardless of what the peer requests (overrides `--allow-target`). Useful for a single-service bastion' -r
-complete -c spt -n "__fish_spt_using_subcommand ssh3-serve" -l allow-open-relay -d 'Explicitly allow peers to choose any `direct-tcp` target the server can reach. This creates an open TCP relay; prefer `--allow-target` or `--fixed-target` for production'
-complete -c spt -n "__fish_spt_using_subcommand ssh3-serve" -l require-authorization -d 'Require this bearer/authorization value on the CONNECT request. When set, a CONNECT whose `Authorization` header does not match is rejected with HTTP 401' -r
+complete -c spt -n "__fish_spt_using_subcommand ssh3-serve" -l require-authorization -d 'Require this bearer/authorization value on the CONNECT request. When set, a CONNECT whose `Authorization` header does not match is rejected with HTTP 401. Prefer `--require-authorization-file` for production so secrets do not appear in process arguments' -r
+complete -c spt -n "__fish_spt_using_subcommand ssh3-serve" -l require-authorization-file -d 'Read the required CONNECT `Authorization` header value from this file. Trailing CR/LF is ignored so newline-terminated secret files work' -r -F
 complete -c spt -n "__fish_spt_using_subcommand ssh3-serve" -l config -d 'Path to a single config file' -r -F
 complete -c spt -n "__fish_spt_using_subcommand ssh3-serve" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
 complete -c spt -n "__fish_spt_using_subcommand ssh3-serve" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
@@ -4972,6 +4972,7 @@ complete -c spt -n "__fish_spt_using_subcommand ssh3-serve" -l color -d 'Color p
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand ssh3-serve" -l self-signed -d 'Dev-mode only: generate a self-signed certificate at startup instead of loading `--cert`/`--key`. Requires the binary to be built with the `server-selfsigned` feature; otherwise this flag errors. The SHA-256 SPKI pin of the generated cert is logged so a peer can pin it'
+complete -c spt -n "__fish_spt_using_subcommand ssh3-serve" -l allow-open-relay -d 'Explicitly allow peers to choose any `direct-tcp` target the server can reach. This creates an open TCP relay; prefer `--allow-target` or `--fixed-target` for production'
 complete -c spt -n "__fish_spt_using_subcommand ssh3-serve" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand ssh3-serve" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand ssh3-serve" -s q -l quiet -d 'Suppress non-essential output'
