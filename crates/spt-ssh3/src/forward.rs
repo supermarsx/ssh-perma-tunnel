@@ -1787,12 +1787,16 @@ pub async fn serve_inbound_opens(
     uds_authorizer: impl Fn(&str) -> bool + Send + Sync + 'static,
 ) {
     let resolver = Arc::new(target_resolver);
+    #[cfg(unix)]
     let uds_authorizer = Arc::new(uds_authorizer);
+    #[cfg(not(unix))]
+    let _ = uds_authorizer;
     loop {
         let Ok((send, mut recv)) = conn.accept_bi().await else {
             break;
         };
         let resolver = resolver.clone();
+        #[cfg(unix)]
         let uds_authorizer = uds_authorizer.clone();
         tokio::spawn(async move {
             let Ok(frame) = Ssh3Frame::read_async(&mut recv).await else {
@@ -2076,7 +2080,10 @@ pub async fn serve_remote_udp_forwards(
     state: Arc<SessionState>,
     remote_uds_authorizer: impl Fn(&str) -> bool + Send + Sync + 'static,
 ) {
+    #[cfg(unix)]
     let remote_uds_authorizer = Arc::new(remote_uds_authorizer);
+    #[cfg(not(unix))]
+    let _ = remote_uds_authorizer;
     loop {
         let frame = match Ssh3Frame::read_async(&mut control_recv).await {
             Ok(f) => f,

@@ -178,9 +178,11 @@ impl TunnelProtocol for Ssh3HarnessProtocol {
             .map_err(|e| Error::RuntimeFailure(format!("ssh3 start_pair: {e}")))?;
         // Server side: resolve every inbound local-TCP open to the echo target.
         let target = self.echo_target.clone();
-        tokio::spawn(serve_inbound_opens(server.conn.clone(), move |_open| {
-            Some(target.clone())
-        }));
+        tokio::spawn(serve_inbound_opens(
+            server.conn.clone(),
+            move |_open| Some(target.clone()),
+            |_| false,
+        ));
         // Retain the server handle so its QUIC connection is not closed on drop.
         self.keepalive.lock().push(server);
         Ok(client.session)
@@ -388,9 +390,11 @@ async fn serve_local_tcp_round_trips() {
 
     // Server side: resolve every inbound open to the echo target.
     let resolve_target = echo_target.clone();
-    let _server_task = tokio::spawn(serve_inbound_opens(server.conn.clone(), move |_open| {
-        Some(resolve_target.clone())
-    }));
+    let _server_task = tokio::spawn(serve_inbound_opens(
+        server.conn.clone(),
+        move |_open| Some(resolve_target.clone()),
+        |_| false,
+    ));
 
     let listen_port = free_tcp_port().await;
     let listen_addr: SocketAddr = ([127, 0, 0, 1], listen_port).into();
@@ -486,6 +490,7 @@ async fn serve_remote_udp_round_trips() {
         s_recv,
         server_send,
         server_state.clone(),
+        |_| false,
     ));
     let _demux = tokio::spawn(serve_datagram_demux(
         server_conn.clone(),
@@ -548,9 +553,11 @@ async fn serve_acl_deny_blocks_bridge() {
     let (mut client, server) = Ssh3TestServer::new().start_pair().await.unwrap();
 
     // Server side: deny every inbound open (resolver yields None → reject).
-    let _server_task = tokio::spawn(serve_inbound_opens(server.conn.clone(), |_open| {
-        Option::<TargetAddr>::None
-    }));
+    let _server_task = tokio::spawn(serve_inbound_opens(
+        server.conn.clone(),
+        |_open| Option::<TargetAddr>::None,
+        |_| false,
+    ));
 
     let listen_port = free_tcp_port().await;
     let listen_addr: SocketAddr = ([127, 0, 0, 1], listen_port).into();

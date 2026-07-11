@@ -140,6 +140,7 @@ async fn remote_udp_forward_round_trips_payload() {
         s_recv,
         server_send,
         server_state.clone(),
+        |_| false,
     ));
     let demux = tokio::spawn(serve_datagram_demux(
         server_conn.clone(),
@@ -238,6 +239,7 @@ async fn remote_udp_forward_relays_multiple_replies() {
         s_recv,
         server_send,
         server_state.clone(),
+        |_| false,
     ));
     let demux = tokio::spawn(serve_datagram_demux(
         server_conn.clone(),
@@ -338,6 +340,7 @@ async fn remote_udp_forward_stateful_multi_exchange() {
         s_recv,
         server_send,
         server_state.clone(),
+        |_| false,
     ));
     let demux = tokio::spawn(serve_datagram_demux(
         server_conn.clone(),
@@ -448,6 +451,7 @@ async fn remote_udp_forward_flood_bounded_by_semaphore() {
         s_recv,
         server_send,
         server_state.clone(),
+        |_| false,
     ));
     let demux = tokio::spawn(serve_datagram_demux(
         server_conn.clone(),
@@ -571,6 +575,7 @@ async fn remote_uds_forward_flood_bounded_by_semaphore() {
         s_recv,
         server_send,
         server_state.clone(),
+        |_| true,
     ));
 
     // Two distinct remote bind paths in the temp dir.
