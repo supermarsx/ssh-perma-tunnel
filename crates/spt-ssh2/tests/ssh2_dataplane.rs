@@ -50,6 +50,7 @@ use tokio::net::{TcpListener, TcpStream};
 /// under the default multi-threaded test harness.
 const PW: &str = "dataplane-pw";
 const PW_ENV: &str = "SPT_TEST_DATAPLANE_PW";
+const ROUNDTRIP_READ_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// Bring up a russh echo server and a live `Ssh2Protocol` session against it.
 async fn connect_session() -> (
@@ -292,7 +293,7 @@ async fn assert_forward_roundtrip_exact_windowed(size: usize, seed: u64, window:
     });
 
     let mut got = vec![0u8; size];
-    tokio::time::timeout(Duration::from_secs(60), rd.read_exact(&mut got))
+    tokio::time::timeout(ROUNDTRIP_READ_TIMEOUT, rd.read_exact(&mut got))
         .await
         .unwrap_or_else(|_| panic!("read of {size} echoed bytes timed out (data lost/hung)"))
         .unwrap_or_else(|e| panic!("read of {size} echoed bytes failed: {e}"));
@@ -337,8 +338,11 @@ async fn local_forward_roundtrip_64kib() {
 // smaller byte-integrity variants (0 B / tiny / 64 KiB), half-close, and
 // throttle+idle all still run on macOS, so the transport is exercised there;
 // only this above-default-window scale variant is macOS-gated. It runs on
-// Windows + Linux (both arches), where it is deterministic. A future harness
-// rework (fully-absorptive both-direction buffering) can re-enable it on macOS.
+// Windows + Linux (both arches), where it is deterministic; the read
+// deadline above is intentionally generous because this whole-workspace
+// suite also runs long-lived russh fixtures under shared Windows hosts. A
+// future harness rework (fully-absorptive both-direction buffering) can
+// re-enable it on macOS.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[cfg_attr(
     target_os = "macos",
