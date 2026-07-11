@@ -92,7 +92,7 @@ impl CrlPolicy {
 #[derive(Debug, Clone)]
 struct CachedCrl {
     /// Original CRL DER. Kept so verifier-time checks can bind the
-    /// cached revocation data to the issuer certificate that WebPKI or
+    /// cached revocation data to the issuer certificate that `WebPKI` or
     /// pinning just accepted.
     der: Vec<u8>,
     /// Revoked serials (big-endian bytes, leading zeros stripped to
