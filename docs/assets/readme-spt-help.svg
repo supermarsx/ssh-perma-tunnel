@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" role="img" aria-label="spt command-line help screenshot" width="980" height="736" viewBox="0 0 980 736">
+  <title>spt command-line help</title>
+  <style>
+    .term { fill: #0b1020; }
+    .bar { fill: #182235; }
+    .prompt { fill: #7dd3fc; font: 600 15px Consolas, 'SFMono-Regular', monospace; }
+    .text { fill: #dbe7ff; font: 14px Consolas, 'SFMono-Regular', monospace; }
+    .muted { fill: #94a3b8; font: 13px Consolas, 'SFMono-Regular', monospace; }
+  </style>
+  <rect class="term" x="0" y="0" width="980" height="100%" rx="14"/>
+  <rect class="bar" x="0" y="0" width="980" height="42" rx="14"/>
+  <circle cx="24" cy="21" r="6" fill="#f87171"/>
+  <circle cx="44" cy="21" r="6" fill="#fbbf24"/>
+  <circle cx="64" cy="21" r="6" fill="#34d399"/>
+  <text class="muted" x="86" y="26">ssh-perma-tunnel</text>
+  <text class="prompt" x="24" y="66">PS&gt; spt --help</text>
+  <text class="text" x="24" y="86">Permanent SSH2/SSH3 tunnels with reconnect, observability, and service integration.</text>
+  <text class="text" x="24" y="108"></text>
+  <text class="text" x="24" y="130">Usage: spt [OPTIONS] &lt;COMMAND&gt;</text>
+  <text class="text" x="24" y="152"></text>
+  <text class="text" x="24" y="174">Commands:</text>
+  <text class="text" x="24" y="196">  config      Manage configuration files (init, validate, diff, render, reload)</text>
+  <text class="text" x="24" y="218">  profile     Manage SSH/SSH3 tunnel profiles</text>
+  <text class="text" x="24" y="240">  forward     Manage forwards (local/remote TCP, UDP)</text>
+  <text class="text" x="24" y="262">  tunnel      Run, inspect, and control tunnels</text>
+  <text class="text" x="24" y="284">  service     Install and control native services</text>
+  <text class="text" x="24" y="306">  key         Generate, inspect, and install SSH keys</text>
+  <text class="text" x="24" y="328">  secret      Manage the secret vault and OS keychain references</text>
+  <text class="text" x="24" y="350">  auth        Authentication helpers</text>
+  <text class="text" x="24" y="372">  dns         Built-in DNS resolver and hosts-file management</text>
+  <text class="text" x="24" y="394">  firewall    Inspect and manage OS firewall / packet-filter rules</text>
+  <text class="text" x="24" y="416">  log         Log tailing, sink testing, and export</text>
+  <text class="text" x="24" y="438">  observe     Metrics and Windows Event Log helpers</text>
+  <text class="text" x="24" y="460">  event       Event bindings and sinks</text>
+  <text class="text" x="24" y="482">  stats       Statistics summaries and live counters</text>
+  <text class="text" x="24" y="504">  session     Inspect and manage active sessions</text>
+  <text class="text" x="24" y="526">  ftp         FTP-&gt;SFTP translator service</text>
+  <text class="text" x="24" y="548">  sftp        SFTP file operations and mount planning</text>
+  <text class="text" x="24" y="570">  diagnose    Targeted diagnostics and support bundles</text>
+  <text class="text" x="24" y="592">  benchmark   Controlled benchmarking against forwards</text>
+  <text class="text" x="24" y="614">  mcp         Built-in MCP server controls</text>
+  <text class="text" x="24" y="636">  ssh3-serve  Run the in-repo SSH3 (QUIC + HTTP/3) server end - the responder half of an spt&lt;-&gt;spt</text>
+  <text class="text" x="24" y="658">              SSH3 tunnel</text>
+  <text class="text" x="24" y="680">...</text>
+</svg>
