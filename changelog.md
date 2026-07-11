@@ -1,3 +1,12 @@
+## [26.55] - 2026-07-11
+
+# spt 26.55
+
+## Changes since 26.54
+
+- docs: improve readme onboarding (3dcc72d)
+- chore: add target cleanup scripts (326de12)
+
 ## [26.54] - 2026-07-11
 
 # spt 26.54
