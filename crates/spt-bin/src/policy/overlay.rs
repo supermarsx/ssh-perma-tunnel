@@ -14,14 +14,33 @@ use crate::policy::registry;
 /// On non-Windows platforms the registry layer always returns an empty bundle,
 /// so this becomes an inexpensive no-op.
 pub fn apply(cfg: &mut Config) -> OverlayReport {
-    let bundle = match registry::load() {
+    let bundle = load_registry_bundle();
+    apply_with(cfg, &bundle)
+}
+
+/// Read machine policy from the registry and overlay it onto `cfg`, ignoring
+/// HKCU advisory values. Use this for authorization gates where an omitted
+/// config field must keep its default-deny meaning unless set by the config or
+/// centrally managed HKLM policy.
+pub fn apply_machine_only(cfg: &mut Config) -> OverlayReport {
+    let bundle = load_registry_bundle();
+    apply_machine_only_with(cfg, &bundle)
+}
+
+fn apply_machine_only_with(cfg: &mut Config, bundle: &PolicyBundle) -> OverlayReport {
+    let mut machine_bundle = bundle.clone();
+    machine_bundle.user.clear();
+    apply_with(cfg, &machine_bundle)
+}
+
+fn load_registry_bundle() -> PolicyBundle {
+    match registry::load() {
         Ok(b) => b,
         Err(e) => {
             tracing::warn!(error = %e, "failed to read GPO registry; continuing without overlay");
             PolicyBundle::empty()
         }
-    };
-    apply_with(cfg, &bundle)
+    }
 }
 
 /// Apply a pre-loaded bundle. Exposed for tests and for callers that want to
@@ -44,6 +63,37 @@ pub fn apply_with(cfg: &mut Config, bundle: &PolicyBundle) -> OverlayReport {
 mod tests {
     use super::*;
     use spt_config::PolicyValue;
+
+    #[test]
+    fn apply_machine_only_ignores_user_policy() {
+        let mut cfg = Config::default();
+        let mut bundle = PolicyBundle::empty();
+        bundle
+            .user
+            .insert("Capabilities\\AllowSftp".into(), PolicyValue::Bool(true));
+
+        let r = apply_machine_only_with(&mut cfg, &bundle);
+
+        assert!(r.applied.is_empty());
+        assert!(cfg
+            .capabilities
+            .as_ref()
+            .and_then(|capabilities| capabilities.allow_sftp)
+            .is_none());
+
+        bundle
+            .machine
+            .insert("Capabilities\\AllowSftp".into(), PolicyValue::Bool(true));
+        let r = apply_machine_only_with(&mut cfg, &bundle);
+
+        assert_eq!(r.applied, vec!["Capabilities\\AllowSftp"]);
+        assert_eq!(
+            cfg.capabilities
+                .as_ref()
+                .and_then(|capabilities| capabilities.allow_sftp),
+            Some(true)
+        );
+    }
 
     #[test]
     fn apply_with_empty_bundle_is_noop() {
