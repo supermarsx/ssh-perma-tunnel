@@ -6,7 +6,6 @@
 //! The libssh2 `HostKeyType`-tagged blob path was removed alongside the
 //! `async-ssh2-lite` dispatch.
 
-use fs4::FileExt;
 use spt_core::{Error, Result};
 use spt_trust::known_hosts::KnownHostsResult;
 use spt_trust::{KnownHosts, Sha256HostPin};
@@ -195,12 +194,12 @@ fn fingerprint_diff(presented: &PublicKey, stored: &[PublicKey]) -> (String, Str
 /// Crash-safety: a raw `O_APPEND` + `write_all` is **not** crash-atomic — a
 /// crash or partial fs flush mid-append can leave a truncated final line and
 /// poison the file. Instead this takes a sibling lock, reads the current file,
-/// appends the new entry, and rewrites the whole file via a temp-file + fsync
-/// + atomic rename (plus a directory fsync on unix). Readers therefore only
-/// ever observe the old complete file or the new complete file; a torn
-/// intermediate state is impossible. If the existing file's final line lacks a trailing newline
-/// (e.g. a pre-existing torn write), a separator is inserted first so the new
-/// entry always lands on its own parseable line — and the defensive parser in
+/// appends the new entry, and rewrites the whole file via a temp file, `fsync`,
+/// atomic rename, and a directory `fsync` on Unix. Readers therefore only ever
+/// observe the old complete file or the new complete file; a torn intermediate
+/// state is impossible. If the existing file's final line lacks a trailing
+/// newline (e.g. a pre-existing torn write), a separator is inserted first so
+/// the new entry always lands on its own parseable line — and the defensive parser in
 /// `spt-trust` skips the stale partial line rather than rejecting the file.
 ///
 /// The temp file is created with 0600 (born-restricted on unix) and that mode
@@ -263,7 +262,7 @@ impl KnownHostsAppendLock {
                     lock_path.display()
                 ))
             })?;
-        file.lock_exclusive().map_err(|e| {
+        fs4::FileExt::lock(&file).map_err(|e| {
             Error::TrustFailed(format!(
                 "lock known_hosts {} via {}: {e}",
                 path.display(),
@@ -276,14 +275,14 @@ impl KnownHostsAppendLock {
 
 impl Drop for KnownHostsAppendLock {
     fn drop(&mut self) {
-        let _ = self.file.unlock();
+        let _ = fs4::FileExt::unlock(&self.file);
     }
 }
 
 fn known_hosts_lock_path(path: &Path) -> PathBuf {
     let mut name = path.file_name().map_or_else(
         || std::ffi::OsString::from("known_hosts"),
-        |n| n.to_os_string(),
+        std::ffi::OsStr::to_os_string,
     );
     name.push(".spt-tofu.lock");
     path.with_file_name(name)
@@ -484,6 +483,28 @@ mod tests {
         // fails (here: the parent directory does not exist), accepting would
         // turn every reconnect into a fresh first use and allow different
         // unauthenticated keys to be accepted indefinitely. Fail closed instead.
+        let key = fresh_pub();
+        let dir = tempfile::tempdir().unwrap();
+        // A path whose parent directory does not exist -> `open(append|create)`
+        // fails (NotFound) without creating intermediate dirs.
+        let bad = dir.path().join("missing_subdir").join("known_hosts");
+        let v = TrustVerifier {
+            accept_new: true,
+            known_hosts_path: Some(bad.clone()),
+            ..Default::default()
+        };
+        let err = v.verify("new.example", 22, &key).unwrap_err();
+        assert!(matches!(err, Error::TrustFailed(_)));
+        // The write genuinely failed: nothing was persisted, and therefore the
+        // host key was not accepted as TOFU.
+        assert!(!bad.exists());
+
+        let different_key = fresh_pub();
+        let err = v.verify("new.example", 22, &different_key).unwrap_err();
+        assert!(matches!(err, Error::TrustFailed(_)));
+    }
+
+    #[test]
     fn concurrent_tofu_appends_preserve_all_host_pins() {
         // Regression for lost updates in the crash-safe whole-file rewrite: all
         // writers must serialize their read/modify/rename cycle, otherwise the
@@ -516,40 +537,11 @@ mod tests {
             .collect::<Vec<_>>();
         hosts.sort();
 
-        let expected = (0..writers)
+        let mut expected = (0..writers)
             .map(|i| format!("host-{i}.example"))
             .collect::<Vec<_>>();
+        expected.sort();
         assert_eq!(hosts, expected, "every concurrent TOFU pin must survive");
-    }
-
-    #[test]
-    fn tofu_persist_failure_is_not_terminal() {
-        // M-7 regression: a transient known_hosts WRITE failure (here: the
-        // parent directory does not exist, so the append/create `open` fails)
-        // must NOT yield a terminal `TrustFailed`. The trust DECISION (accept
-        // on first use) is separate from PERSISTING it — the connection is
-        // trusted, we just couldn't cache it, so `verify` returns Ok(TofuAdded)
-        // and the profile keeps running. Fails against the pre-fix code (which
-        // propagated the write error as `TrustFailed`); passes after the fix.
-        let key = fresh_pub();
-        let dir = tempfile::tempdir().unwrap();
-        // A path whose parent directory does not exist → `open(append|create)`
-        // fails (NotFound) without creating intermediate dirs.
-        let bad = dir.path().join("missing_subdir").join("known_hosts");
-        let v = TrustVerifier {
-            accept_new: true,
-            known_hosts_path: Some(bad.clone()),
-            ..Default::default()
-        };
-        let err = v.verify("new.example", 22, &key).unwrap_err();
-        assert!(matches!(err, Error::TrustFailed(_)));
-        // The write genuinely failed: nothing was persisted, and therefore the
-        // host key was not accepted as TOFU.
-        assert!(!bad.exists());
-
-        let different_key = fresh_pub();
-        let err = v.verify("new.example", 22, &different_key).unwrap_err();
-        assert!(matches!(err, Error::TrustFailed(_)));
     }
 
     #[test]

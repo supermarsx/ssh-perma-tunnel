@@ -265,6 +265,7 @@ impl Ssh2ProtocolBuilder {
     /// Add a hop with explicit dispatch kind plus a separate logical host-key
     /// verification name.
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn hop_with_kind_name(
         mut self,
         host: impl Into<String>,
@@ -748,7 +749,7 @@ mod tests {
                 "127.0.0.1",
                 "bastion.example.com",
                 2222,
-                AuthConfig::default(),
+                AuthConfig::new("user", Vec::new()),
                 trust,
             )
             .build();
