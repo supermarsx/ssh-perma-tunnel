@@ -24,7 +24,7 @@
 use std::sync::Arc;
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::crypto::{verify_tls12_signature, verify_tls13_signature};
+use rustls::crypto::{self, verify_tls12_signature, verify_tls13_signature};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{
     ClientConfig, DigitallySignedStruct, Error as TlsError, RootCertStore, SignatureScheme,
@@ -311,13 +311,7 @@ impl ServerCertVerifier for SptVerifier {
         // prove possession of the certificate private key. Verify the
         // handshake signature directly against the presented certificate's
         // public key instead of accepting it because no WebPKI verifier exists.
-        let provider = rustls::crypto::aws_lc_rs::default_provider();
-        verify_tls12_signature(
-            message,
-            cert,
-            dss,
-            &provider.signature_verification_algorithms,
-        )
+        verify_tls12_signature(message, cert, dss, &self.signature_algorithms)
     }
 
     fn verify_tls13_signature(
@@ -331,22 +325,14 @@ impl ServerCertVerifier for SptVerifier {
         }
         // See the TLS 1.2 path above: pin/self-signed certificate acceptance
         // does not waive CertificateVerify authentication.
-        let provider = rustls::crypto::aws_lc_rs::default_provider();
-        verify_tls13_signature(
-            message,
-            cert,
-            dss,
-            &provider.signature_verification_algorithms,
-        )
+        verify_tls13_signature(message, cert, dss, &self.signature_algorithms)
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
         if let Some(inner) = &self.inner {
             return inner.supported_verify_schemes();
         }
-        rustls::crypto::aws_lc_rs::default_provider()
-            .signature_verification_algorithms
-            .supported_schemes()
+        self.signature_algorithms.supported_schemes()
     }
 }
 
