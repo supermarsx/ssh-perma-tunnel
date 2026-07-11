@@ -19,6 +19,7 @@
 #![cfg(all(unix, not(miri), feature = "testing"))]
 #![allow(clippy::manual_let_else, clippy::ignored_unit_patterns)]
 
+use std::collections::HashSet;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -59,20 +60,28 @@ fn server_config_and_pin() -> (quinn::ServerConfig, [u8; 32]) {
 }
 
 /// Stand up a loopback `Ssh3Server`. The ACL resolves every (TCP) open to a
-/// dummy target; UDS opens dial the client-supplied path directly, so the
-/// resolver is irrelevant for the UDS path.
-fn start_server() -> (SocketAddr, [u8; 32]) {
+/// dummy target and explicitly allow-lists the test-owned UDS paths that the
+/// server may connect or bind.
+fn start_server(allowed_uds_paths: &[PathBuf]) -> (SocketAddr, [u8; 32]) {
     let (server_cfg, pin) = server_config_and_pin();
     let endpoint = quinn::Endpoint::server(server_cfg, (Ipv4Addr::LOCALHOST, 0).into()).unwrap();
     let addr = endpoint.local_addr().unwrap();
+    let allowed_uds_paths = Arc::new(
+        allowed_uds_paths
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect::<HashSet<_>>(),
+    );
 
     tokio::spawn(async move {
         while let Some(incoming) = endpoint.accept().await {
+            let allowed_uds_paths = allowed_uds_paths.clone();
             tokio::spawn(async move {
                 let Ok(conn) = incoming.await else {
                     return;
                 };
-                let acl = Ssh3ServerAcl::fixed_target(TargetAddr::new("127.0.0.1", 9));
+                let acl = Ssh3ServerAcl::fixed_target(TargetAddr::new("127.0.0.1", 9))
+                    .with_authorize_uds_path(move |path| allowed_uds_paths.contains(path));
                 let _ = Ssh3Server::new().run(conn, acl).await;
             });
         }
@@ -163,7 +172,7 @@ async fn local_uds_forward_round_trips() {
     let echo_path = sock_path("echo-local");
     start_uds_echo(&echo_path);
 
-    let (server_addr, pin) = start_server();
+    let (server_addr, pin) = start_server(std::slice::from_ref(&echo_path));
     let mut session = connect(server_addr, pin).await;
     assert_eq!(session.session_info().backend, "ssh3");
 
@@ -204,12 +213,11 @@ async fn remote_uds_forward_round_trips() {
     let local_echo = sock_path("echo-remote");
     start_uds_echo(&local_echo);
 
-    let (server_addr, pin) = start_server();
-    let mut session = connect(server_addr, pin).await;
-
     // Ask the server to bind this remote listen path; accepted connections are
     // bridged back to our local echo socket.
     let remote_listen = sock_path("remote-listen");
+    let (server_addr, pin) = start_server(std::slice::from_ref(&remote_listen));
+    let mut session = connect(server_addr, pin).await;
     let spec = RemoteUdsForwardSpec {
         name: "e2e-remote-uds".into(),
         remote_socket_path: remote_listen.to_string_lossy().into_owned(),
@@ -249,7 +257,7 @@ async fn local_uds_forward_large_payload_round_trips() {
     let echo_path = sock_path("echo-large");
     start_uds_echo(&echo_path);
 
-    let (server_addr, pin) = start_server();
+    let (server_addr, pin) = start_server(std::slice::from_ref(&echo_path));
     let mut session = connect(server_addr, pin).await;
 
     let listen_path = sock_path("large-listen");
@@ -307,7 +315,7 @@ async fn local_uds_forward_half_close_client_first() {
         w.shutdown().await.unwrap();
     });
 
-    let (server_addr, pin) = start_server();
+    let (server_addr, pin) = start_server(std::slice::from_ref(&resp_path));
     let mut session = connect(server_addr, pin).await;
 
     let listen_path = sock_path("hc-listen");
