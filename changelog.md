@@ -1,3 +1,11 @@
+## [26.58] - 2026-07-12
+
+# spt 26.58
+
+## Changes since 26.57
+
+- ci: avoid release lockfile registry churn (04aadc6)
+
 ## [26.57] - 2026-07-12
 
 # spt 26.57
