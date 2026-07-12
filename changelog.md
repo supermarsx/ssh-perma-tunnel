@@ -1,3 +1,11 @@
+## [26.57] - 2026-07-12
+
+# spt 26.57
+
+## Changes since 26.56
+
+- ci: keep standalone lockfiles aligned on release (841f242)
+
 ## [26.56] - 2026-07-12
 
 # spt 26.56
