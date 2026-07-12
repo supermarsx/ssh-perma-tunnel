@@ -236,7 +236,7 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # prepare-release — compute the next YY.N once, share the bumped Cargo.toml
-  # + Cargo.lock with every downstream job via the `prepared-source` artifact.
+  # + lockfiles with every downstream job via the `prepared-source` artifact.
   #
   # Why this exists: `cargo build` / `cargo-deb` / `cargo-generate-rpm` /
   # `cargo-wix` all read the workspace version from Cargo.toml at the moment
@@ -265,17 +265,19 @@ jobs:
           # shallow checkout has no tag refs.
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@1.88.0
-      - name: Compute next YY.N and bump Cargo.toml + Cargo.lock
+      - name: Compute next YY.N and bump Cargo.toml + lockfiles
         id: bump
         shell: bash
         run: bash scripts/release/bump-version.sh
-      - name: Upload prepared-source (Cargo.toml + Cargo.lock)
+      - name: Upload prepared-source (Cargo.toml + lockfiles)
         uses: actions/upload-artifact@v7
         with:
           name: prepared-source
           path: |
             Cargo.toml
             Cargo.lock
+            tests/chaos/Cargo.lock
+            tests/property/Cargo.lock
           retention-days: 7
           if-no-files-found: error
 
@@ -317,12 +319,12 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
-      - name: Overlay prepared-source (bumped Cargo.toml + Cargo.lock)
+      - name: Overlay prepared-source (bumped Cargo.toml + lockfiles)
         uses: actions/download-artifact@v8
         with:
           name: prepared-source
           # Extract at repo root, overwriting the as-checked-out Cargo.toml +
-          # Cargo.lock with the prepare-release bumped copies so every cargo
+          # lockfiles with the prepare-release bumped copies so every cargo
           # invocation in this job sees the to-be-released version.
           path: .
       - uses: dtolnay/rust-toolchain@1.88.0
@@ -417,7 +419,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
-      - name: Overlay prepared-source (bumped Cargo.toml + Cargo.lock)
+      - name: Overlay prepared-source (bumped Cargo.toml + lockfiles)
         uses: actions/download-artifact@v8
         with:
           name: prepared-source
@@ -494,7 +496,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
-      - name: Overlay prepared-source (bumped Cargo.toml + Cargo.lock)
+      - name: Overlay prepared-source (bumped Cargo.toml + lockfiles)
         uses: actions/download-artifact@v8
         with:
           name: prepared-source
@@ -654,7 +656,7 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Overlay prepared-source (bumped Cargo.toml + Cargo.lock)
+      - name: Overlay prepared-source (bumped Cargo.toml + lockfiles)
         uses: actions/download-artifact@v8
         with:
           name: prepared-source
@@ -682,7 +684,7 @@ jobs:
         id: bump
         shell: bash
         run: |
-          # prepare-release already bumped Cargo.toml + Cargo.lock and emitted
+          # prepare-release already bumped Cargo.toml + lockfiles and emitted
           # the version values as job outputs. Re-publish those values under
           # the `steps.bump.outputs.*` names every downstream step in this
           # job uses, so we don't have to sweep the rest of the YAML.
@@ -798,11 +800,12 @@ jobs:
         run: |
           git config user.email "ci@spt.local"
           git config user.name  "spt-ci"
-          # Cargo.lock is refreshed by bump-version.sh (`cargo update -w`)
-          # so its workspace-member version entries match Cargo.toml. Include
-          # it in the bump commit — without it, the next push's `cargo
-          # --locked` gates fail with "the lock file needs to be updated".
-          git add Cargo.toml Cargo.lock changelog.md 2>/dev/null || true
+          # Cargo.lock and the decoupled property/chaos lockfiles are refreshed
+          # by bump-version.sh so their spt path-dependency version entries
+          # match Cargo.toml. Include them in the bump commit — without them,
+          # the next push's `cargo --locked` gates fail with "the lock file
+          # needs to be updated".
+          git add Cargo.toml Cargo.lock tests/chaos/Cargo.lock tests/property/Cargo.lock changelog.md 2>/dev/null || true
           # [skip ci] is REQUIRED: this bump commit is pushed back to main, and
           # without it the new push would re-run CI and cut another release —
           # an infinite release loop.

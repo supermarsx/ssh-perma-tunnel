@@ -17,6 +17,7 @@
 #   bash scripts/release/bump-version.sh             # CI mode: writes
 #                                                    # $GITHUB_OUTPUT (if set)
 #                                                    # and edits Cargo.toml
+#                                                    # plus Cargo.lock files
 #   bash scripts/release/bump-version.sh --dry-run   # print version + exit
 #
 # Outputs (when GITHUB_OUTPUT is set):
@@ -91,6 +92,76 @@ fi
 ROOT="$(git rev-parse --show-toplevel)"
 CARGO_TOML="${ROOT}/Cargo.toml"
 CARGO_LOCK="${ROOT}/Cargo.lock"
+
+refresh_lockfile() {
+  local manifest="$1"
+  shift
+
+  if [[ ! -f "${manifest}" ]]; then
+    return 0
+  fi
+  if ! command -v cargo >/dev/null 2>&1; then
+    echo "::warning::cargo not on PATH; skipping ${manifest} refresh"
+    return 0
+  fi
+
+  local args=(update --manifest-path "${manifest}")
+  for package in "$@"; do
+    args+=(-p "${package}")
+  done
+
+  (cd "${ROOT}" && cargo "${args[@]}" --offline) || \
+    (cd "${ROOT}" && cargo "${args[@]}")
+}
+
+refresh_standalone_locks() {
+  # These two harnesses are deliberately outside the root workspace, but they
+  # depend on rolling-version spt crates by path. Refresh them with explicit
+  # package lists so a release bump does not silently update third-party deps.
+  refresh_lockfile "${ROOT}/tests/chaos/Cargo.toml" \
+    spt-auth \
+    spt-chaos-proxy \
+    spt-config \
+    spt-core \
+    spt-events \
+    spt-forward \
+    spt-key \
+    spt-net \
+    spt-observability \
+    spt-protocol \
+    spt-secrets \
+    spt-sftp \
+    spt-state \
+    spt-stats \
+    spt-supervisor \
+    spt-trust
+
+  refresh_lockfile "${ROOT}/tests/property/Cargo.toml" \
+    spt-auth \
+    spt-config \
+    spt-core \
+    spt-events \
+    spt-forward \
+    spt-key \
+    spt-net \
+    spt-protocol \
+    spt-secrets \
+    spt-snmp \
+    spt-ssh3 \
+    spt-state \
+    spt-trust
+}
+
+refresh_root_lock() {
+  if ! command -v cargo >/dev/null 2>&1; then
+    echo "::warning::cargo not on PATH; skipping Cargo.lock refresh"
+    return 0
+  fi
+
+  (cd "${ROOT}" && cargo update --workspace --offline) || \
+    (cd "${ROOT}" && cargo update --workspace)
+}
+
 if grep -qE '^version = "[^"]*"[[:space:]]*#[[:space:]]*rolling' "${CARGO_TOML}"; then
   # Portable in-place edit (BSD/GNU sed compatible).
   tmp=$(mktemp)
@@ -106,13 +177,13 @@ if grep -qE '^version = "[^"]*"[[:space:]]*#[[:space:]]*rolling' "${CARGO_TOML}"
   # party deps. `--offline` keeps the runner from hitting crates.io for
   # what is purely a version-string refresh of locally-owned entries.
   if [[ -f "${CARGO_LOCK}" ]]; then
-    if command -v cargo >/dev/null 2>&1; then
-      (cd "${ROOT}" && cargo update --workspace --offline) || \
-        (cd "${ROOT}" && cargo update --workspace)
-    else
-      echo "::warning::cargo not on PATH; skipping Cargo.lock refresh"
-    fi
+    refresh_root_lock
   fi
+
+  # The property and chaos harnesses are decoupled workspaces with their own
+  # Cargo.lock files. Keep them aligned with the root rolling version so the
+  # next push after an automated release does not fail their `--locked` jobs.
+  refresh_standalone_locks
 else
   echo "::warning::Cargo.toml version line missing '# rolling' marker; skipping in-place bump"
 fi
