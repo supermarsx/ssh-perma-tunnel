@@ -1,3 +1,13 @@
+## [26.56] - 2026-07-12
+
+# spt 26.56
+
+## Changes since 26.55
+
+- test: relax loaded ssh2 dataplane timeout (fe51231)
+- test: avoid fixed ftp passive ports (79133e3)
+- chore: refresh standalone test lockfiles (53480db)
+
 ## [26.55] - 2026-07-11
 
 # spt 26.55
