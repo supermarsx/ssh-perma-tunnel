@@ -93,32 +93,79 @@ ROOT="$(git rev-parse --show-toplevel)"
 CARGO_TOML="${ROOT}/Cargo.toml"
 CARGO_LOCK="${ROOT}/Cargo.lock"
 
-refresh_lockfile() {
-  local manifest="$1"
+rewrite_lock_versions() {
+  local lockfile="$1"
   shift
 
-  if [[ ! -f "${manifest}" ]]; then
-    return 0
-  fi
-  if ! command -v cargo >/dev/null 2>&1; then
-    echo "::warning::cargo not on PATH; skipping ${manifest} refresh"
+  if [[ ! -f "${lockfile}" ]]; then
     return 0
   fi
 
-  local args=(update --manifest-path "${manifest}")
-  for package in "$@"; do
-    args+=(-p "${package}")
-  done
+  local py_bin=""
+  if command -v python3 >/dev/null 2>&1; then
+    py_bin="python3"
+  elif command -v python >/dev/null 2>&1; then
+    py_bin="python"
+  else
+    echo "::error::python is required to refresh ${lockfile}" >&2
+    return 1
+  fi
 
-  (cd "${ROOT}" && cargo "${args[@]}" --offline) || \
-    (cd "${ROOT}" && cargo "${args[@]}")
+  LOCKFILE="${lockfile}" CARGO_VERSION="${CARGO_VERSION}" "${py_bin}" - "$@" <<'PY'
+from pathlib import Path
+import os
+import re
+import sys
+
+lockfile = Path(os.environ["LOCKFILE"])
+version = os.environ["CARGO_VERSION"]
+packages = set(sys.argv[1:])
+name_re = re.compile(r'^name = "([^"]+)"')
+version_re = re.compile(r'^version = "[^"]+"')
+
+lines = lockfile.read_text(encoding="utf-8").splitlines(keepends=True)
+out = []
+in_package = False
+current = None
+seen = set()
+
+for line in lines:
+    if line.startswith("[[package]]"):
+        in_package = True
+        current = None
+        out.append(line)
+        continue
+    if in_package and line.startswith("[") and not line.startswith("[[package]]"):
+        in_package = False
+        current = None
+
+    if in_package:
+        name = name_re.match(line)
+        if name:
+            current = name.group(1)
+            if current in packages:
+                seen.add(current)
+        elif current in packages and version_re.match(line):
+            newline = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
+            line = f'version = "{version}"{newline}'
+
+    out.append(line)
+
+missing = sorted(packages - seen)
+if missing:
+    print(f"missing package entries in {lockfile}: {', '.join(missing)}", file=sys.stderr)
+    sys.exit(1)
+
+lockfile.write_text("".join(out), encoding="utf-8")
+PY
 }
 
 refresh_standalone_locks() {
   # These two harnesses are deliberately outside the root workspace, but they
-  # depend on rolling-version spt crates by path. Refresh them with explicit
-  # package lists so a release bump does not silently update third-party deps.
-  refresh_lockfile "${ROOT}/tests/chaos/Cargo.toml" \
+  # depend on rolling-version spt crates by path. Rewrite only the local spt
+  # package version fields; running `cargo update` here can rewrite registry
+  # packages when CI's offline cache is only partially warm.
+  rewrite_lock_versions "${ROOT}/tests/chaos/Cargo.lock" \
     spt-auth \
     spt-chaos-proxy \
     spt-config \
@@ -136,7 +183,7 @@ refresh_standalone_locks() {
     spt-supervisor \
     spt-trust
 
-  refresh_lockfile "${ROOT}/tests/property/Cargo.toml" \
+  rewrite_lock_versions "${ROOT}/tests/property/Cargo.lock" \
     spt-auth \
     spt-config \
     spt-core \
