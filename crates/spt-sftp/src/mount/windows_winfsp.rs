@@ -213,7 +213,15 @@ impl SftpMounter for WinFsMounter {
             .name("spt-sftp-dokan".into())
             .spawn(move || {
                 let handler = DokanSftpFs::new(sftp_for_thread, runtime, remote_root, readonly);
-                let mut flags = MountFlags::empty();
+                // Security: the SFTP mount proxies all filesystem operations
+                // through the operator's authenticated SSH session. Do not
+                // publish that capability into other Windows logon sessions
+                // where unrelated local users/processes could drive the
+                // mount as the operator. Dokan's CURRENT_SESSION flag keeps
+                // the volume private to the mounting logon session, mirroring
+                // the default private-mount posture used by the Unix backends
+                // unless their explicit allow_other option is enabled.
+                let mut flags = MountFlags::CURRENT_SESSION;
                 if readonly {
                     flags |= MountFlags::WRITE_PROTECT;
                 }
