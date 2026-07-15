@@ -182,12 +182,11 @@ impl KnownHosts {
             // change the outcome (Revoked dominates; any key match is a Match;
             // Mismatch is order-independent over the stored-key set).
             Some(idx) => {
-                for keyform in [host.to_owned(), format!("[{host}]:{port}")] {
-                    if let Some(hits) = idx.exact.get(&keyform.to_ascii_lowercase()) {
-                        for &ei in hits {
-                            if let Some(r) = consider(&self.entries[ei]) {
-                                return r;
-                            }
+                let keyform = format_host(host, port);
+                if let Some(hits) = idx.exact.get(&keyform.to_ascii_lowercase()) {
+                    for &ei in hits {
+                        if let Some(r) = consider(&self.entries[ei]) {
+                            return r;
                         }
                     }
                 }
@@ -372,7 +371,7 @@ fn host_matches(field: &str, host: &str, port: u16) -> bool {
     // (`!pat`) that matches the host vetoes the *entire* field regardless of
     // any positive matches; otherwise the field matches iff at least one
     // positive (non-negated) pattern matches.
-    let candidates = [host.to_owned(), format!("[{host}]:{port}")];
+    let candidate = format_host(host, port);
     let mut positive_hit = false;
     for raw in field.split(',') {
         let pat = raw.trim();
@@ -384,7 +383,7 @@ fn host_matches(field: &str, host: &str, port: u16) -> bool {
             None => (false, pat),
         };
         let pat_norm = pat.trim_matches('"');
-        let m = candidates.iter().any(|c| glob_match(pat_norm, c));
+        let m = glob_match(pat_norm, &candidate);
         if m {
             if neg {
                 // Negated match vetoes the whole field.
@@ -425,14 +424,11 @@ fn verify_hashed(salt_b64: &str, hash_b64: &str, host: &str, port: u16) -> bool 
     let Ok(want) = B64.decode(hash_b64) else {
         return false;
     };
-    for candidate in [host.to_owned(), format!("[{host}]:{port}")] {
-        if let Ok(mut mac) = HmacSha1::new_from_slice(&salt) {
-            mac.update(candidate.as_bytes());
-            let got = mac.finalize().into_bytes();
-            if got.ct_eq(&want).into() {
-                return true;
-            }
-        }
+    let candidate = format_host(host, port);
+    if let Ok(mut mac) = HmacSha1::new_from_slice(&salt) {
+        mac.update(candidate.as_bytes());
+        let got = mac.finalize().into_bytes();
+        return got.ct_eq(&want).into();
     }
     false
 }
@@ -515,6 +511,17 @@ mod tests {
         let kh = KnownHosts::parse(&text).unwrap();
         let r = kh.verify("example.com", 2222, &key);
         assert_eq!(r, KnownHostsResult::Match);
+    }
+
+    #[test]
+    fn bare_host_does_not_match_nonstandard_port() {
+        let key = one_key();
+        let text = entry_text("example.com", &key);
+        let kh = KnownHosts::parse(&text).unwrap();
+        assert_eq!(
+            kh.verify("example.com", 2222, &key),
+            KnownHostsResult::NotFound
+        );
     }
 
     #[test]
@@ -671,6 +678,24 @@ mod tests {
     }
 
     #[test]
+    fn negation_vetoes_nonstandard_port_bracket_pattern() {
+        let key = one_key();
+        let text = format!(
+            "[*.example.com]:2222,![bastion.example.com]:2222 {}",
+            key.to_openssh().unwrap()
+        );
+        let kh = KnownHosts::parse(&text).unwrap();
+        assert_eq!(
+            kh.verify("bastion.example.com", 2222, &key),
+            KnownHostsResult::NotFound
+        );
+        assert_eq!(
+            kh.verify("app.example.com", 2222, &key),
+            KnownHostsResult::Match
+        );
+    }
+
+    #[test]
     fn indexed_lookup_matches_linear_scan() {
         // E2-F4 regression: the exact-match index must produce byte-identical
         // verify() outcomes to a forced full linear scan over the same entries,
@@ -749,6 +774,19 @@ mod tests {
         assert_eq!(kh.verify("h.example", 2222, &key), KnownHostsResult::Match);
         // Different port doesn't match.
         assert_eq!(kh.verify("h.example", 22, &key), KnownHostsResult::NotFound);
+    }
+
+    #[test]
+    fn hashed_bare_host_does_not_match_nonstandard_port() {
+        let key = one_key();
+        let mut kh = KnownHosts::default();
+        kh.add("h.example", 22, key.clone(), true);
+        assert!(kh.entries[0].host_field.starts_with("|1|"));
+        assert_eq!(kh.verify("h.example", 22, &key), KnownHostsResult::Match);
+        assert_eq!(
+            kh.verify("h.example", 2222, &key),
+            KnownHostsResult::NotFound
+        );
     }
 
     #[test]
