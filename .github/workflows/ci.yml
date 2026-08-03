@@ -521,7 +521,7 @@ jobs:
           cargo install --locked cargo-generate-rpm --version 0.21.0
       - name: Install cargo-wix (prebuilt)
         if: ${{ matrix.os == 'windows' }}
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@v2.85.5
         with:
           tool: cargo-wix
       # The windows-2025-vs2026 image ships WiX 3 preinstalled, but the

@@ -58,7 +58,7 @@ jobs:
       # for cargo-audit. Pinned: 0.19.x is required because 0.17 cannot parse
       # CVSS v4.0 advisory entries now present in the RustSec DB.
       - name: Install cargo-deny (prebuilt)
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@v2.85.5
         with:
           tool: cargo-deny@0.19.9
 

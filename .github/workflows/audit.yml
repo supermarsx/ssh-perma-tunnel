@@ -53,7 +53,7 @@ jobs:
       # job uses for cargo-deb/cargo-wix. Avoids a multi-minute source compile
       # of cargo-audit on every weekly run.
       - name: Install cargo-audit (prebuilt)
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@v2.85.5
         with:
           tool: cargo-audit
 

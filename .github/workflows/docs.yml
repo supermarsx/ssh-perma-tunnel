@@ -65,7 +65,7 @@ jobs:
       # Install a prebuilt mdBook binary (no cargo compile). taiki-e/install-action
       # fetches the pinned release artifact and adds it to PATH.
       - name: Install mdBook
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@v2.85.5
         with:
           tool: mdbook@${{ env.MDBOOK_VERSION }}
 
